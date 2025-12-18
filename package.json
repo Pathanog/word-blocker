@@ -1,0 +1,14 @@
+{
+  "name": "discord-word-blocker",
+  "version": "1.0.0",
+  "description": "Admin controlled Discord word blocker bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "dotenv": "^16.4.5"
+  }
+}
