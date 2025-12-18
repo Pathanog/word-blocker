@@ -15,114 +15,138 @@ const client = new Client({
   ]
 });
 
-// ---------- Helpers ----------
-const loadJSON = (file, def) => {
-  if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify(def));
-  return JSON.parse(fs.readFileSync(file));
-};
-const saveJSON = (file, data) =>
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+// ===== IN-MEMORY CACHE =====
+let blockedWords = {};
+let whitelist = [];
+let blockRegex = null;
 
-// ---------- Ready ----------
+// ===== LOAD DATA ONCE =====
+function loadData() {
+  blockedWords = fs.existsSync(WORDS_FILE)
+    ? JSON.parse(fs.readFileSync(WORDS_FILE))
+    : {};
+
+  whitelist = fs.existsSync(WHITELIST_FILE)
+    ? JSON.parse(fs.readFileSync(WHITELIST_FILE))
+    : [];
+
+  rebuildRegex();
+}
+
+// ===== BUILD SINGLE REGEX =====
+function rebuildRegex() {
+  const words = Object.keys(blockedWords);
+  if (!words.length) {
+    blockRegex = null;
+    return;
+  }
+
+  // Escape regex safely
+  const escaped = words.map(w =>
+    w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  );
+
+  blockRegex = new RegExp(`\\b(${escaped.join("|")})\\b`, "i");
+}
+
+// ===== SAVE ASYNC =====
+function saveWords() {
+  fs.writeFile(WORDS_FILE, JSON.stringify(blockedWords, null, 2), () => {});
+}
+function saveWhitelist() {
+  fs.writeFile(WHITELIST_FILE, JSON.stringify(whitelist, null, 2), () => {});
+}
+
+// ===== READY =====
 client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  loadData();
+  console.log(`✅ Strong bot online as ${client.user.tag}`);
 });
 
-// ---------- Message Handler ----------
+// ===== MESSAGE HANDLER =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  const blockedWords = loadJSON(WORDS_FILE, {});
-  const whitelist = loadJSON(WHITELIST_FILE, []);
-
   // ===== ADMIN COMMANDS =====
   if (message.content.startsWith(PREFIX)) {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return;
 
     const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
     const cmd = args.shift()?.toLowerCase();
 
-    // ADD WORD
     if (cmd === "addword") {
       const word = args.shift();
       const reason = args.join(" ") || "This word is blocked.";
       if (!word) return message.reply("❌ `%addword <word> <reason>`");
 
       blockedWords[word.toLowerCase()] = reason;
-      saveJSON(WORDS_FILE, blockedWords);
+      saveWords();
+      rebuildRegex();
+
       return message.reply(`✅ Blocked **${word}**`);
     }
 
-    // REMOVE WORD
     if (cmd === "removeword") {
       const word = args.shift()?.toLowerCase();
-      if (!blockedWords[word]) return message.reply("❌ Word not found");
+      if (!blockedWords[word]) return message.reply("❌ Word not found.");
 
       delete blockedWords[word];
-      saveJSON(WORDS_FILE, blockedWords);
+      saveWords();
+      rebuildRegex();
+
       return message.reply(`✅ Unblocked **${word}**`);
     }
 
-    // LIST WORDS
     if (cmd === "listwords") {
-      const list = Object.entries(blockedWords);
-      if (!list.length) return message.reply("No banned words.");
-
+      const list = Object.keys(blockedWords);
       return message.reply(
-        "🚫 **Banned Words:**\n" +
-          list.map(([w, r]) => `• **${w}** → ${r}`).join("\n")
+        list.length
+          ? "🚫 **Banned Words:**\n" + list.join(", ")
+          : "No banned words."
       );
     }
 
-    // WHITELIST ADD
     if (cmd === "whitelistadd") {
       const user = message.mentions.users.first();
       if (!user) return message.reply("❌ Mention a user.");
 
       if (!whitelist.includes(user.id)) {
         whitelist.push(user.id);
-        saveJSON(WHITELIST_FILE, whitelist);
+        saveWhitelist();
       }
       return message.reply(`✅ ${user.tag} whitelisted`);
     }
 
-    // WHITELIST REMOVE
     if (cmd === "whitelistremove") {
       const user = message.mentions.users.first();
-      if (!user) return message.reply("❌ Mention a user.");
-
-      saveJSON(
-        WHITELIST_FILE,
-        whitelist.filter((id) => id !== user.id)
-      );
-      return message.reply(`✅ ${user.tag} removed from whitelist`);
+      whitelist = whitelist.filter(id => id !== user.id);
+      saveWhitelist();
+      return message.reply(`✅ ${user.tag} removed`);
     }
 
-    // WHITELIST LIST
     if (cmd === "whitelist") {
-      if (!whitelist.length) return message.reply("Whitelist empty.");
       return message.reply(
-        "✅ **Whitelisted Users:**\n" +
-          whitelist.map((id) => `<@${id}>`).join("\n")
+        whitelist.length
+          ? whitelist.map(id => `<@${id}>`).join("\n")
+          : "Whitelist empty."
       );
     }
   }
 
-  // ===== WORD FILTER =====
+  // ===== FAST WORD CHECK =====
+  if (!blockRegex) return;
   if (whitelist.includes(message.author.id)) return;
 
-  const content = message.content.toLowerCase();
+  const match = message.content.match(blockRegex);
+  if (!match) return;
 
-  for (const word in blockedWords) {
-    const regex = new RegExp(`\\b${word}\\b`, "i"); // WHOLE WORD MATCH
-    if (regex.test(content)) {
-      await message.delete().catch(() => {});
-      await message.author.send(
-        `🚫 **Message Blocked**\n\n**Word:** ${word}\n**Reason:** ${blockedWords[word]}`
-      ).catch(() => {});
-      break;
-    }
-  }
+  const word = match[1].toLowerCase();
+
+  await message.delete().catch(() => {});
+  await message.author.send(
+    `🚫 **Message Blocked**\n\n**Word:** ${word}\n**Reason:** ${blockedWords[word]}`
+  ).catch(() => {});
 });
 
 client.login(process.env.TOKEN);
